@@ -1,7 +1,7 @@
 import asyncio
 import aiohttp
 import time
-from db import Database
+from module.db import Database
 import pandas as pd
 import json
 import os
