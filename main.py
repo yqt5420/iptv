@@ -12,8 +12,7 @@ def m3u():
 
     m3u = M3U8()
     fpath = 'iptv.m3u'
-    # dp开启，使用ffmpeg获取分辨率
-    asyncio.run(m3u.start(fpath, 2048, dp=False))
+    asyncio.run(m3u.start(fpath, 2048))
     # push_to_git()
 
 

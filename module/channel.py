@@ -103,14 +103,17 @@ class CHANNEL():
                 self.semaphore = asyncio.Semaphore(semaphore)
             to_check_urls = self.to_check_url()
             if to_check_urls:
-                tasks = [self.check_url(url, self.semaphore) for url in to_check_urls]
-                channel_data = await asyncio.gather(*tasks)
+                tasks = [asyncio.wait_for(self.check_url(url, self.semaphore), timeout=120) for url in to_check_urls]
+                channel_data = await asyncio.gather(*tasks, return_exceptions=True)
+                channel_data = [item for item in channel_data if item and not isinstance(item, Exception)]
                 # print(channel_data)
                 channel_datas = []
                 for item in channel_data:
                     if item:
                         channel_datas += item
+                print(f'{to_check_urls}个json_url检查完毕！')
                 self.write_to_db(channel_datas)
+                
         except Exception as e:
             print(f"Error: {e}")
 
