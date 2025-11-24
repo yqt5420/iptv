@@ -63,7 +63,7 @@ get_url() {
     local url="$1"
 
     if [[ "$url" =~ ^https://github.com/ ]]; then
-        echo "https://gh-proxy.com/${url}"
+        echo "https://gh-proxy.org/${url}"
         return 0
     fi
 
