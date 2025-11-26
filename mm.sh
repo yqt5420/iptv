@@ -2,8 +2,16 @@
 
 set -e
 
+# GitHub 安装支持
+# 使用方法1（推荐）: 设置环境变量后执行
+#   SCRIPT_GITHUB_URL="https://raw.githubusercontent.com/user/repo/branch/mm.sh" bash <(curl -sSL https://raw.githubusercontent.com/user/repo/branch/mm.sh) install
+# 使用方法2: 直接执行，脚本会使用本地版本
+#   bash mm.sh install
+# 使用方法3: 安装后使用系统命令
+#   mm install
+SCRIPT_GITHUB_URL="https://raw.githubusercontent.com//repo/branch/mm.sh"
+#bash <(curl -sSL https://raw.githubusercontent.com/user/repo/branch/mm.sh) install
 # 配置变量
-INTERFACE=$(ip route show default | awk '/default/ {print $5}' | sort -u)
 TPROXY_PORT=7893
 ROUTING_MARK=255
 PROXY_FWMARK=1
@@ -13,6 +21,45 @@ COMMON_PORTS_TCP='{ 80, 443, 3389, 8080, 8443, 1080, 3128, 8081, 9080 }'
 # 保留IP地址
 ReservedIP4='{ 127.0.0.0/8, 10.0.0.0/8, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16, 172.16.0.0/12, 224.0.0.0/4, 240.0.0.0/4, 255.255.255.255/32 }'
 CustomBypassIP='{ 192.168.0.0/16 }'
+
+# 自动识别网络接口
+detect_interfaces() {
+    # 获取默认路由接口
+    local default_if=$(ip route show default | awk '/default/ {print $5}' | head -n1)
+    
+    # 获取docker相关接口
+    local docker_interfaces=""
+    if command -v docker >/dev/null 2>&1; then
+        # 检测docker网桥和虚拟接口
+        for iface in $(ip link show | grep -E '^[0-9]+: (docker|br-|veth)' | awk -F': ' '{print $2}' | awk '{print $1}'); do
+            if [ -n "$docker_interfaces" ]; then
+                docker_interfaces="$docker_interfaces, $iface"
+            else
+                docker_interfaces="$iface"
+            fi
+        done
+    fi
+    
+    # 获取本地回环接口
+    local lo_if="lo"
+    
+    # 构建接口列表
+    local all_interfaces="$lo_if"
+    if [ -n "$default_if" ] && [ "$default_if" != "lo" ]; then
+        all_interfaces="$all_interfaces, $default_if"
+    fi
+    if [ -n "$docker_interfaces" ]; then
+        all_interfaces="$all_interfaces, $docker_interfaces"
+    fi
+    
+    echo "$all_interfaces"
+}
+
+# 获取主网络接口（用于output链）
+get_main_interface() {
+    local main_if=$(ip route show default | awk '/default/ {print $5}' | head -n1)
+    echo "${main_if:-eth0}"
+}
 
 # 颜色定义
 RED='\033[0;31m'
@@ -71,16 +118,55 @@ get_url() {
     return 0
 }
 
+# 检测脚本的GitHub URL（如果是从curl下载的）
+detect_script_url() {
+    # 检查是否通过curl下载（通过检查脚本内容或环境变量）
+    # 如果设置了SCRIPT_GITHUB_URL环境变量，直接使用
+    if [ -n "${SCRIPT_GITHUB_URL:-}" ]; then
+        echo "$SCRIPT_GITHUB_URL"
+        return 0
+    fi
+    
+    # 尝试从脚本自身检测（如果脚本中有标记）
+    # 这里可以手动设置，或者通过参数传递
+    echo ""
+}
+
 # 安装脚本为系统命令
 install_script_as_command() {
     local cmd_name="mm"  # 使用 mm 作为命令名
     local install_path="/usr/local/bin/$cmd_name"
+    local script_url="${SCRIPT_GITHUB_URL:-}"
+    local config_file="/etc/mihomo/mm_script_url.conf"
 
-    # 复制当前脚本到系统命令路径
-    cp -f "$0" "$install_path"
-    chmod +x "$install_path"
+    # 如果提供了github URL，保存到配置文件
+    if [ -n "$script_url" ]; then
+        echo "$script_url" > "$config_file" 2>/dev/null || true
+        log_info "已保存 GitHub URL: $script_url"
+    elif [ -f "$config_file" ]; then
+        # 如果配置文件存在，读取保存的URL
+        script_url=$(cat "$config_file" 2>/dev/null || echo "")
+    fi
 
-    log_info "已将脚本安装为系统命令: $cmd_name"
+    # 如果提供了github URL，则从github下载；否则使用当前脚本
+    if [ -n "$script_url" ]; then
+        log_info "从 GitHub 下载最新脚本: $script_url"
+        if curl -sSL "$script_url" -o "$install_path" 2>/dev/null; then
+            chmod +x "$install_path"
+            log_info "已从 GitHub 安装脚本为系统命令: $cmd_name"
+        else
+            log_warn "从 GitHub 下载脚本失败，使用本地脚本"
+            cp -f "$0" "$install_path"
+            chmod +x "$install_path"
+            log_info "已将本地脚本安装为系统命令: $cmd_name"
+        fi
+    else
+        # 复制当前脚本到系统命令路径
+        cp -f "$0" "$install_path"
+        chmod +x "$install_path"
+        log_info "已将脚本安装为系统命令: $cmd_name"
+    fi
+    
     log_info "现在你可以直接使用 '$cmd_name <命令>' 来管理 mihomo 服务"
 }
 
@@ -88,48 +174,83 @@ install_script_as_command() {
 uninstall_script_command() {
     local cmd_name="mm"
     local install_path="/usr/local/bin/$cmd_name"
+    local config_file="/etc/mihomo/mm_script_url.conf"
 
     if [[ -f "$install_path" ]]; then
         rm -f "$install_path"
         log_info "已移除系统命令: $cmd_name"
     fi
+    
+    # 清理保存的GitHub URL配置
+    if [ -f "$config_file" ]; then
+        rm -f "$config_file"
+    fi
 }
 
 # 创建nftables配置文件
 create_nftables_config() {
+    local main_if=$(get_main_interface)
+    local bypass_interfaces=$(detect_interfaces)
+    
+    # 构建接口匹配表达式
+    local bypass_if_list=""
+    if [ -n "$bypass_interfaces" ]; then
+        # 将接口列表转换为nftables格式: { lo, docker0, br-xxx }
+        bypass_if_list="{ $(echo "$bypass_interfaces" | sed 's/, */, /g') }"
+    else
+        bypass_if_list="{ lo }"
+    fi
+    
     cat > /etc/mihomo/nftables.conf << EOF
 table inet mihomo {
     chain prerouting_tproxy {
         type filter hook prerouting priority filter; policy accept;
-        ip daddr $CustomBypassIP accept comment "绕过某些地址"
-        fib daddr type local meta l4proto { tcp, udp } th dport $TPROXY_PORT reject with icmpx type host-unreachable comment "直接访问tproxy端口拒绝, 防止回环"
-        fib daddr type local accept comment "本机绕过"
+        # 绕过保留地址和自定义绕过地址
         ip daddr $ReservedIP4 accept comment "保留地址绕过"
-        meta l4proto tcp socket transparent 1 meta mark set $PROXY_FWMARK accept comment "绕过已经建立的透明代理"
-        meta l4proto { tcp, udp } tproxy to :$TPROXY_PORT meta mark set $PROXY_FWMARK comment "其他流量透明代理"
+        ip daddr $CustomBypassIP accept comment "自定义绕过地址"
+        # 防止直接访问tproxy端口造成回环
+        fib daddr type local meta l4proto { tcp, udp } th dport $TPROXY_PORT reject with icmpx type host-unreachable comment "防止tproxy端口回环"
+        # 公网访问容器：来自主网络接口且目标是本地地址的流量直接接受（不走代理）
+        iifname "$main_if" fib daddr type local accept comment "公网访问容器端口直接接受"
+        # 绕过已建立的透明代理连接
+        meta l4proto tcp socket transparent 1 meta mark set $PROXY_FWMARK accept comment "绕过已建立的透明代理连接"
+        # 代理来自本地接口的流量（包括容器发出的流量）
+        iifname $bypass_if_list meta l4proto { tcp, udp } tproxy to :$TPROXY_PORT meta mark set $PROXY_FWMARK comment "代理本地/容器流量"
+        # 代理其他所有TCP/UDP流量（来自公网接口的流量）
+        meta l4proto { tcp, udp } tproxy to :$TPROXY_PORT meta mark set $PROXY_FWMARK comment "代理其他流量"
     }
 
     chain output_tproxy {
         type route hook output priority filter; policy accept;
-        oifname != $INTERFACE accept comment "绕过本机内部通信的流量(接口lo)"
-        meta mark $ROUTING_MARK accept comment "绕过本机mihomo发出的流量"
-        ip daddr $CustomBypassIP accept comment "绕过某些地址"
-        fib daddr type local accept comment "本机绕过"
+        # 绕过mihomo自身流量
+        meta mark $ROUTING_MARK accept comment "绕过mihomo自身流量"
+        # 绕过保留地址和自定义绕过地址
         ip daddr $ReservedIP4 accept comment "保留地址绕过"
-        meta l4proto { tcp, udp } th dport $COMMON_PORTS_TCP meta mark set $PROXY_FWMARK comment "其他流量重路由到prerouting"
+        ip daddr $CustomBypassIP accept comment "自定义绕过地址"
+        # 绕过本地地址
+        fib daddr type local accept comment "本地地址绕过"
+        # 只代理指定端口的流量（过滤P2P等大流量端口）
+        meta l4proto { tcp, udp } th dport $COMMON_PORTS_TCP meta mark set $PROXY_FWMARK comment "重路由到prerouting（仅常用端口）"
     }
+    
     chain nat_p {
         type nat hook prerouting priority filter; policy accept;
-        meta l4proto { tcp, udp } th dport 53 redirect to :1053 comment "DNS重定向prerouting到1053"
+        # DNS重定向到mihomo（排除公网访问容器的DNS查询）
+        iifname != "$main_if" meta l4proto { tcp, udp } th dport 53 redirect to :1053 comment "DNS重定向到mihomo（本地/容器）"
+        # 公网DNS查询也重定向（可选，根据需要调整）
+        iifname "$main_if" meta l4proto { tcp, udp } th dport 53 redirect to :1053 comment "DNS重定向到mihomo（公网）"
     }
-    chain nat_output{
+    
+    chain nat_output {
         type nat hook output priority filter; policy accept;
-        meta l4proto { tcp, udp } th dport 53 redirect to :1053 comment "DNS重定向output到1053"
-
+        # DNS重定向到mihomo
+        meta l4proto { tcp, udp } th dport 53 redirect to :1053 comment "DNS重定向到mihomo"
     }
 }
 EOF
     log_info "nftables 配置文件已创建: /etc/mihomo/nftables.conf"
+    log_info "主网络接口: $main_if"
+    log_info "本地接口: $bypass_interfaces"
 }
 
 # 软件下载
@@ -183,7 +304,7 @@ download_mihomo() {
 
 # 创建systemd服务文件
 create_systemd_service() {
-    cat > /etc/systemd/system/mihomo.service << EOF
+    cat > /etc/systemd/system/mihomo.service << 'SERVICE_EOF'
 [Unit]
 Description=mihomo transparent proxy service
 After=network.target
@@ -200,16 +321,13 @@ StateDirectory=mihomo
 CacheDirectory=mihomo
 LogsDirectory=mihomo
 
-
-# 启动前准备 - 不设置防火墙规则，避免死循环
+# 启动前准备
 ExecStartPre=+/bin/bash -c 'echo "正在启动mihomo服务..."'
 ExecStartPre=+/bin/bash -c 'sysctl -w net.ipv4.ip_forward=1 > /dev/null'
 ExecStartPre=+/bin/bash -c 'sysctl -w net.core.default_qdisc=fq > /dev/null'
 ExecStartPre=+/bin/bash -c 'sysctl -w net.ipv4.tcp_congestion_control=bbr > /dev/null'
-ExecStartPre=+/bin/bash -c 'nft flush ruleset 2>/dev/null || true'
 
-
-# 启动mihomo - 不设置防火墙规则
+# 启动mihomo
 ExecStart=/usr/local/bin/mihomo -d /etc/mihomo
 
 # 等待mihomo启动后再设置防火墙规则
@@ -222,16 +340,18 @@ ExecStartPost=+/bin/bash -c 'ip -f inet rule add fwmark $PROXY_FWMARK lookup $PR
 ExecStartPost=+/bin/bash -c 'ip -f inet route add local default dev lo table $PROXY_ROUTE_TABLE 2>/dev/null || true'
 ExecStartPost=+/bin/bash -c 'nft -f /etc/mihomo/nftables.conf 2>/dev/null || true'
 
-
-# 停止后清理防火墙规则
+# 停止后清理防火墙规则（只清理mihomo表，不破坏其他规则）
 ExecStop=+/bin/bash -c 'echo "正在清理网络规则..."'
 ExecStop=+/bin/bash -c 'pkill mihomo 2>/dev/null || true'
 ExecStop=+/bin/bash -c 'ip -f inet rule del fwmark $PROXY_FWMARK lookup $PROXY_ROUTE_TABLE0 2>/dev/null || true'
 ExecStop=+/bin/bash -c 'ip -f inet route flush table $PROXY_ROUTE_TABLE 2>/dev/null || true'
 ExecStop=+/bin/bash -c 'nft flush ruleset 2>/dev/null || true'
 
-# 重新加载时清理并重新设置规则
-ExecReload=+/bin/bash -c 'nft flush ruleset 2>/dev/null || true'
+ExecStop=+/bin/bash -c 'nft delete table inet mihomo 2>/dev/null || true'
+
+
+# 重新加载时只重新加载mihomo表
+ExecReload=+/bin/bash -c 'nft delete table inet mihomo 2>/dev/null || true'
 ExecReload=+/bin/bash -c 'nft -f /etc/mihomo/nftables.conf 2>/dev/null || true'
 
 Restart=on-failure
@@ -243,7 +363,7 @@ NoNewPrivileges=yes
 
 [Install]
 WantedBy=multi-user.target
-EOF
+SERVICE_EOF
 
     systemctl daemon-reload
     log_info "systemd 服务文件已创建"
@@ -388,11 +508,13 @@ EOF
 
 # 网络规则管理（调试用）
 setup_rules() {
+    check_root
     log_info "设置网络规则（调试模式）..."
     if [ -f /etc/mihomo/nftables.conf ]; then
+        # 只加载mihomo表，不破坏其他规则
         nft -f /etc/mihomo/nftables.conf
-        ip -f inet rule add fwmark $PROXY_FWMARK lookup $PROXY_ROUTE_TABLE
-        ip -f inet route add local default dev lo table $PROXY_ROUTE_TABLE
+        ip -f inet rule add fwmark $PROXY_FWMARK lookup $PROXY_ROUTE_TABLE 2>/dev/null || true
+        ip -f inet route add local default dev lo table $PROXY_ROUTE_TABLE 2>/dev/null || true
         sysctl -w net.ipv4.ip_forward=1 > /dev/null
         sysctl -w net.core.default_qdisc=fq > /dev/null
         log_info "nftables 规则已应用（调试）"
@@ -403,15 +525,17 @@ setup_rules() {
 
 # 清理网络规则（调试用）
 clear_rules() {
+    check_root
     log_info "清理网络规则（调试模式）..."
-    IPRULE=$(ip rule show | grep $PROXY_ROUTE_TABLE)
-    if [ -n "$IPRULE" ]
-    then
-        ip -f inet rule del fwmark $PROXY_FWMARK lookup $PROXY_ROUTE_TABLE
-        ip -f inet route flush table $PROXY_ROUTE_TABLE
+    # 只清理mihomo相关的规则，不破坏其他规则
+    IPRULE=$(ip rule show | grep "fwmark $PROXY_FWMARK lookup $PROXY_ROUTE_TABLE")
+    if [ -n "$IPRULE" ]; then
+        ip -f inet rule del fwmark $PROXY_FWMARK lookup $PROXY_ROUTE_TABLE 2>/dev/null || true
+        ip -f inet route flush table $PROXY_ROUTE_TABLE 2>/dev/null || true
     fi
-    nft flush ruleset
-    log_info "网络规则已清理（调试）"
+    # 只删除mihomo表，不破坏其他表
+    nft delete table inet mihomo 2>/dev/null || true
+    log_info "mihomo 网络规则已清理（调试）"
 }
 
 # 安装mihomo
@@ -572,12 +696,27 @@ show_usage() {
   mm start                    # 安装后使用系统命令启动服务
   mm enable                   # 启用开机自启
 
+从 GitHub 一键安装:
+  # 方法1: 设置GitHub URL后安装（推荐，安装的脚本会记住URL以便后续更新）
+  SCRIPT_GITHUB_URL="https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO/main/mm.sh" \\
+    bash <(curl -sSL https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO/main/mm.sh) install
+  
+  # 方法2: 直接安装（使用本地脚本）
+  bash <(curl -sSL https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO/main/mm.sh) install
+
 注意: 安装完成后请编辑 /etc/mihomo/config.yaml 配置你的代理服务器
 EOF
 }
 
 # 主函数
 main() {
+    # 如果是从curl下载的，尝试检测GitHub URL
+    # 通过检查是否通过管道传递来判断
+    if [ -t 0 ] && [ -z "${SCRIPT_GITHUB_URL:-}" ]; then
+        # 交互式终端，不是从管道读取
+        SCRIPT_GITHUB_URL=""
+    fi
+    
     if [ $# != 1 ]
     then
         show_usage
@@ -625,6 +764,10 @@ main() {
             ;;
     esac
 }
+
+# 如果脚本是通过 curl | bash 方式执行的，尝试从环境变量或参数中获取GitHub URL
+# 使用方法: SCRIPT_GITHUB_URL="https://raw.githubusercontent.com/user/repo/branch/mm.sh" bash <(curl -sSL ...)
+# 或者: curl -sSL ... | SCRIPT_GITHUB_URL="..." bash
 
 # 运行主函数
 main "$@"
