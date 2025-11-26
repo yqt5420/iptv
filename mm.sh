@@ -304,7 +304,7 @@ download_mihomo() {
 
 # 创建systemd服务文件
 create_systemd_service() {
-    cat > /etc/systemd/system/mihomo.service << 'EOF'
+    cat > /etc/systemd/system/mihomo.service << EOF
 [Unit]
 Description=mihomo transparent proxy service
 After=network.target
