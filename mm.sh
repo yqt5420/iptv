@@ -9,7 +9,7 @@ set -e
 #   bash mm.sh install
 # 使用方法3: 安装后使用系统命令
 #   mm install
-SCRIPT_GITHUB_URL="https://raw.githubusercontent.com//repo/branch/mm.sh"
+SCRIPT_GITHUB_URL="https://ghfast.top/https://raw.githubusercontent.com/yqt5420/iptv/refs/heads/master/mm.sh"
 #bash <(curl -sSL https://raw.githubusercontent.com/user/repo/branch/mm.sh) install
 # 配置变量
 TPROXY_PORT=7893
