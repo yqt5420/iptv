@@ -10,7 +10,6 @@ set -e
 # 使用方法3: 安装后使用系统命令
 #   mm install
 SCRIPT_GITHUB_URL="https://ghfast.top/https://raw.githubusercontent.com/yqt5420/iptv/refs/heads/master/mm.sh"
-#bash <(curl -sSL https://raw.githubusercontent.com/user/repo/branch/mm.sh) install
 # 配置变量
 TPROXY_PORT=7893
 ROUTING_MARK=255
@@ -304,6 +303,10 @@ download_mihomo() {
 
 # 创建systemd服务文件
 create_systemd_service() {
+    # 在函数内部使用变量，这样在heredoc中会被正确展开
+    local fwmark=$PROXY_FWMARK
+    local route_table=$PROXY_ROUTE_TABLE
+    
     cat > /etc/systemd/system/mihomo.service << EOF
 [Unit]
 Description=mihomo transparent proxy service
@@ -333,22 +336,18 @@ ExecStart=/usr/local/bin/mihomo -d /etc/mihomo
 # 等待mihomo启动后再设置防火墙规则
 ExecStartPost=+/bin/bash -c 'echo "等待mihomo启动..."'
 ExecStartPost=+/bin/sleep 5
-ExecStartPost=+/bin/bash -c 'echo "设置网络规则..."'
-# 启动后设置防火墙规则
 ExecStartPost=+/bin/bash -c 'echo "正在设置网络规则..."'
-ExecStartPost=+/bin/bash -c 'ip -f inet rule add fwmark $PROXY_FWMARK lookup $PROXY_ROUTE_TABLE 2>/dev/null || true'
-ExecStartPost=+/bin/bash -c 'ip -f inet route add local default dev lo table $PROXY_ROUTE_TABLE 2>/dev/null || true'
+# 启动后设置防火墙规则
+ExecStartPost=+/bin/bash -c 'ip -f inet rule add fwmark $fwmark lookup $route_table 2>/dev/null || true'
+ExecStartPost=+/bin/bash -c 'ip -f inet route add local default dev lo table $route_table 2>/dev/null || true'
 ExecStartPost=+/bin/bash -c 'nft -f /etc/mihomo/nftables.conf 2>/dev/null || true'
 
 # 停止后清理防火墙规则（只清理mihomo表，不破坏其他规则）
 ExecStop=+/bin/bash -c 'echo "正在清理网络规则..."'
 ExecStop=+/bin/bash -c 'pkill mihomo 2>/dev/null || true'
-ExecStop=+/bin/bash -c 'ip -f inet rule del fwmark $PROXY_FWMARK lookup $PROXY_ROUTE_TABLE0 2>/dev/null || true'
-ExecStop=+/bin/bash -c 'ip -f inet route flush table $PROXY_ROUTE_TABLE 2>/dev/null || true'
-ExecStop=+/bin/bash -c 'nft flush ruleset 2>/dev/null || true'
-
+ExecStop=+/bin/bash -c 'ip -f inet rule del fwmark $fwmark lookup $route_table 2>/dev/null || true'
+ExecStop=+/bin/bash -c 'ip -f inet route flush table $route_table 2>/dev/null || true'
 ExecStop=+/bin/bash -c 'nft delete table inet mihomo 2>/dev/null || true'
-
 
 # 重新加载时只重新加载mihomo表
 ExecReload=+/bin/bash -c 'nft delete table inet mihomo 2>/dev/null || true'
@@ -695,14 +694,6 @@ show_usage() {
   $(basename "$0") install    # 安装 mihomo 并安装为系统命令 mm
   mm start                    # 安装后使用系统命令启动服务
   mm enable                   # 启用开机自启
-
-从 GitHub 一键安装:
-  # 方法1: 设置GitHub URL后安装（推荐，安装的脚本会记住URL以便后续更新）
-  SCRIPT_GITHUB_URL="https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO/main/mm.sh" \\
-    bash <(curl -sSL https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO/main/mm.sh) install
-  
-  # 方法2: 直接安装（使用本地脚本）
-  bash <(curl -sSL https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO/main/mm.sh) install
 
 注意: 安装完成后请编辑 /etc/mihomo/config.yaml 配置你的代理服务器
 EOF
