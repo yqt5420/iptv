@@ -30,7 +30,7 @@ detect_interfaces() {
     local docker_interfaces=""
     if command -v docker >/dev/null 2>&1; then
         # 检测docker网桥和虚拟接口
-        for iface in $(ip link show | grep -E '^[0-9]+: (docker|br-|veth)' | awk -F': ' '{print $2}' | awk '{print $1}'); do
+        for iface in $(ip link show | grep -E '^[0-9]+: (docker|br-)' | awk -F': ' '{print $2}' | awk '{print $1}'); do
             if [ -n "$docker_interfaces" ]; then
                 docker_interfaces="$docker_interfaces, $iface"
             else
@@ -204,46 +204,32 @@ create_nftables_config() {
 table inet mihomo {
     chain prerouting_tproxy {
         type filter hook prerouting priority filter; policy accept;
-        # 绕过保留地址和自定义绕过地址
+        iifname $bypass_if_list accept comment "放行容器回程"
+        ip daddr $CustomBypassIP accept comment "绕过某些地址"
+        fib daddr type local meta l4proto { tcp, udp } th dport $TPROXY_PORT reject with icmpx type host-unreachable comment "直接访问tproxy端口拒绝, 防止回环"
+        fib daddr type local accept comment "本机绕过"
         ip daddr $ReservedIP4 accept comment "保留地址绕过"
-        ip daddr $CustomBypassIP accept comment "自定义绕过地址"
-        # 防止直接访问tproxy端口造成回环
-        fib daddr type local meta l4proto { tcp, udp } th dport $TPROXY_PORT reject with icmpx type host-unreachable comment "防止tproxy端口回环"
-        # 公网访问容器：来自主网络接口且目标是本地地址的流量直接接受（不走代理）
-        iifname "$main_if" fib daddr type local accept comment "公网访问容器端口直接接受"
-        # 绕过已建立的透明代理连接
-        meta l4proto tcp socket transparent 1 meta mark set $PROXY_FWMARK accept comment "绕过已建立的透明代理连接"
-        # 代理来自本地接口的流量（包括容器发出的流量）
-        iifname $bypass_if_list meta l4proto { tcp, udp } tproxy to :$TPROXY_PORT meta mark set $PROXY_FWMARK comment "代理本地/容器流量"
-        # 代理其他所有TCP/UDP流量（来自公网接口的流量）
-        meta l4proto { tcp, udp } tproxy to :$TPROXY_PORT meta mark set $PROXY_FWMARK comment "代理其他流量"
+        meta l4proto tcp socket transparent 1 meta mark set $PROXY_FWMARK accept comment "绕过已经建立的透明代理"
+        meta l4proto { tcp, udp } tproxy to :$TPROXY_PORT meta mark set $PROXY_FWMARK comment "其他流量透明代理"
     }
 
     chain output_tproxy {
         type route hook output priority filter; policy accept;
-        # 绕过mihomo自身流量
-        meta mark $ROUTING_MARK accept comment "绕过mihomo自身流量"
-        # 绕过保留地址和自定义绕过地址
+        oifname != $main_if accept comment "绕过本机内部通信的流量(接口lo)"
+        meta mark $ROUTING_MARK accept comment "绕过本机mihomo发出的流量"
+        ip daddr $CustomBypassIP accept comment "绕过某些地址"
+        fib daddr type local accept comment "本机绕过"
         ip daddr $ReservedIP4 accept comment "保留地址绕过"
-        ip daddr $CustomBypassIP accept comment "自定义绕过地址"
-        # 绕过本地地址
-        fib daddr type local accept comment "本地地址绕过"
-        # 只代理指定端口的流量（过滤P2P等大流量端口）
-        meta l4proto { tcp, udp } th dport $COMMON_PORTS_TCP meta mark set $PROXY_FWMARK comment "重路由到prerouting（仅常用端口）"
+        meta l4proto { tcp, udp } th dport $COMMON_PORTS_TCP meta mark set $PROXY_FWMARK comment "其他流量重路由到prerouting"
     }
-    
     chain nat_p {
         type nat hook prerouting priority filter; policy accept;
-        # DNS重定向到mihomo（排除公网访问容器的DNS查询）
-        iifname != "$main_if" meta l4proto { tcp, udp } th dport 53 redirect to :1053 comment "DNS重定向到mihomo（本地/容器）"
-        # 公网DNS查询也重定向（可选，根据需要调整）
-        iifname "$main_if" meta l4proto { tcp, udp } th dport 53 redirect to :1053 comment "DNS重定向到mihomo（公网）"
+        meta l4proto { tcp, udp } th dport 53 redirect to :1053 comment "DNS重定向prerouting到1053"
     }
-    
-    chain nat_output {
+    chain nat_output{
         type nat hook output priority filter; policy accept;
-        # DNS重定向到mihomo
-        meta l4proto { tcp, udp } th dport 53 redirect to :1053 comment "DNS重定向到mihomo"
+        meta l4proto { tcp, udp } th dport 53 redirect to :1053 comment "DNS重定向output到1053"
+
     }
 }
 EOF
