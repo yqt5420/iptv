@@ -2,15 +2,8 @@
 
 set -e
 
-# GitHub 安装支持
-# 使用方法1（推荐）: 设置环境变量后执行
-#   SCRIPT_GITHUB_URL="https://raw.githubusercontent.com/user/repo/branch/mm.sh" bash <(curl -sSL https://raw.githubusercontent.com/user/repo/branch/mm.sh) install
-# 使用方法2: 直接执行，脚本会使用本地版本
-#   bash mm.sh install
-# 使用方法3: 安装后使用系统命令
-#   mm install
-SCRIPT_GITHUB_URL="https://ghfast.top/https://raw.githubusercontent.com/yqt5420/iptv/refs/heads/master/mm.sh"
 # 配置变量
+INTERFACE=$(ip route show default | awk '/default/ {print $5}' | sort -u)
 TPROXY_PORT=7893
 ROUTING_MARK=255
 PROXY_FWMARK=1
@@ -20,45 +13,6 @@ COMMON_PORTS_TCP='{ 80, 443, 3389, 8080, 8443, 1080, 3128, 8081, 9080 }'
 # 保留IP地址
 ReservedIP4='{ 127.0.0.0/8, 10.0.0.0/8, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16, 172.16.0.0/12, 224.0.0.0/4, 240.0.0.0/4, 255.255.255.255/32 }'
 CustomBypassIP='{ 192.168.0.0/16 }'
-
-# 自动识别网络接口
-detect_interfaces() {
-    # 获取默认路由接口
-    local default_if=$(ip route show default | awk '/default/ {print $5}' | head -n1)
-    
-    # 获取docker相关接口
-    local docker_interfaces=""
-    if command -v docker >/dev/null 2>&1; then
-        # 检测docker网桥和虚拟接口
-        for iface in $(ip link show | grep -E '^[0-9]+: (docker|br-)' | awk -F': ' '{print $2}' | awk '{print $1}'); do
-            if [ -n "$docker_interfaces" ]; then
-                docker_interfaces="$docker_interfaces, $iface"
-            else
-                docker_interfaces="$iface"
-            fi
-        done
-    fi
-    
-    # 获取本地回环接口
-    local lo_if="lo"
-    
-    # 构建接口列表
-    local all_interfaces="$lo_if"
-    if [ -n "$default_if" ] && [ "$default_if" != "lo" ]; then
-        all_interfaces="$all_interfaces, $default_if"
-    fi
-    if [ -n "$docker_interfaces" ]; then
-        all_interfaces="$all_interfaces, $docker_interfaces"
-    fi
-    
-    echo "$all_interfaces"
-}
-
-# 获取主网络接口（用于output链）
-get_main_interface() {
-    local main_if=$(ip route show default | awk '/default/ {print $5}' | head -n1)
-    echo "${main_if:-eth0}"
-}
 
 # 颜色定义
 RED='\033[0;31m'
@@ -117,55 +71,16 @@ get_url() {
     return 0
 }
 
-# 检测脚本的GitHub URL（如果是从curl下载的）
-detect_script_url() {
-    # 检查是否通过curl下载（通过检查脚本内容或环境变量）
-    # 如果设置了SCRIPT_GITHUB_URL环境变量，直接使用
-    if [ -n "${SCRIPT_GITHUB_URL:-}" ]; then
-        echo "$SCRIPT_GITHUB_URL"
-        return 0
-    fi
-    
-    # 尝试从脚本自身检测（如果脚本中有标记）
-    # 这里可以手动设置，或者通过参数传递
-    echo ""
-}
-
 # 安装脚本为系统命令
 install_script_as_command() {
     local cmd_name="mm"  # 使用 mm 作为命令名
     local install_path="/usr/local/bin/$cmd_name"
-    local script_url="${SCRIPT_GITHUB_URL:-}"
-    local config_file="/etc/mihomo/mm_script_url.conf"
 
-    # 如果提供了github URL，保存到配置文件
-    if [ -n "$script_url" ]; then
-        echo "$script_url" > "$config_file" 2>/dev/null || true
-        log_info "已保存 GitHub URL: $script_url"
-    elif [ -f "$config_file" ]; then
-        # 如果配置文件存在，读取保存的URL
-        script_url=$(cat "$config_file" 2>/dev/null || echo "")
-    fi
+    # 复制当前脚本到系统命令路径
+    cp -f "$0" "$install_path"
+    chmod +x "$install_path"
 
-    # 如果提供了github URL，则从github下载；否则使用当前脚本
-    if [ -n "$script_url" ]; then
-        log_info "从 GitHub 下载最新脚本: $script_url"
-        if curl -sSL "$script_url" -o "$install_path" 2>/dev/null; then
-            chmod +x "$install_path"
-            log_info "已从 GitHub 安装脚本为系统命令: $cmd_name"
-        else
-            log_warn "从 GitHub 下载脚本失败，使用本地脚本"
-            cp -f "$0" "$install_path"
-            chmod +x "$install_path"
-            log_info "已将本地脚本安装为系统命令: $cmd_name"
-        fi
-    else
-        # 复制当前脚本到系统命令路径
-        cp -f "$0" "$install_path"
-        chmod +x "$install_path"
-        log_info "已将脚本安装为系统命令: $cmd_name"
-    fi
-    
+    log_info "已将脚本安装为系统命令: $cmd_name"
     log_info "现在你可以直接使用 '$cmd_name <命令>' 来管理 mihomo 服务"
 }
 
@@ -173,33 +88,68 @@ install_script_as_command() {
 uninstall_script_command() {
     local cmd_name="mm"
     local install_path="/usr/local/bin/$cmd_name"
-    local config_file="/etc/mihomo/mm_script_url.conf"
 
     if [[ -f "$install_path" ]]; then
         rm -f "$install_path"
         log_info "已移除系统命令: $cmd_name"
     fi
-    
-    # 清理保存的GitHub URL配置
-    if [ -f "$config_file" ]; then
-        rm -f "$config_file"
-    fi
 }
+
+# 自动识别网络接口
+detect_interfaces() {
+    # 获取默认路由接口
+    local default_if=$(ip route show default | awk '/default/ {print $5}' | head -n1)
+
+    # 获取docker相关接口
+    local docker_interfaces=""
+    if command -v docker >/dev/null 2>&1; then
+        # 检测docker网桥和虚拟接口
+        for iface in $(ip link show | grep -E '^[0-9]+: (docker|br-)' | awk -F': ' '{print $2}' | awk '{print $1}'); do
+            if [ -n "$docker_interfaces" ]; then
+                docker_interfaces="$docker_interfaces, $iface"
+            else
+                docker_interfaces="$iface"
+            fi
+        done
+    fi
+
+    # 获取本地回环接口
+    local lo_if="lo"
+
+    # 构建接口列表
+    local all_interfaces="$lo_if"
+    if [ -n "$default_if" ] && [ "$default_if" != "lo" ]; then
+        all_interfaces="$all_interfaces, $default_if"
+    fi
+    if [ -n "$docker_interfaces" ]; then
+        all_interfaces="$all_interfaces, $docker_interfaces"
+    fi
+
+    echo "$all_interfaces"
+}
+
 
 # 创建nftables配置文件
 create_nftables_config() {
-    local main_if=$(get_main_interface)
-    local bypass_interfaces=$(detect_interfaces)
-    
-    # 构建接口匹配表达式
+    default_if=$(ip route show default | awk '/default/ {print $5}' | head -n1)
+    local docker_interfaces=""
     local bypass_if_list=""
-    if [ -n "$bypass_interfaces" ]; then
-        # 将接口列表转换为nftables格式: { lo, docker0, br-xxx }
-        bypass_if_list="{ $(echo "$bypass_interfaces" | sed 's/, */, /g') }"
-    else
-        bypass_if_list="{ lo }"
+    if command -v docker >/dev/null 2>&1; then
+        # 检测docker网桥和虚拟接口
+        for iface in $(ip link show | grep -E '^[0-9]+: (docker|br-)' | awk -F': ' '{print $2}' | awk '{print $1}'); do
+            if [ -n "$docker_interfaces" ]; then
+                docker_interfaces="$docker_interfaces, $iface"
+            else
+                docker_interfaces="$iface"
+            fi
+        done
     fi
-    
+    if [ -n "$docker_interfaces" ]; then
+        # 将接口列表转换为nftables格式: { lo, docker0, br-xxx }
+        bypass_if_list="{ $(echo "$docker_interfaces" | sed 's/, */, /g') }"
+    else
+        bypass_if_list="{ docker0 }"
+    fi
     cat > /etc/mihomo/nftables.conf << EOF
 table inet mihomo {
     chain prerouting_tproxy {
@@ -215,7 +165,7 @@ table inet mihomo {
 
     chain output_tproxy {
         type route hook output priority filter; policy accept;
-        oifname != $main_if accept comment "绕过本机内部通信的流量(接口lo)"
+        oifname != $INTERFACE accept comment "绕过本机内部通信的流量，非主上网网口全部放行，只代理主上网网口"
         meta mark $ROUTING_MARK accept comment "绕过本机mihomo发出的流量"
         ip daddr $CustomBypassIP accept comment "绕过某些地址"
         fib daddr type local accept comment "本机绕过"
@@ -234,8 +184,6 @@ table inet mihomo {
 }
 EOF
     log_info "nftables 配置文件已创建: /etc/mihomo/nftables.conf"
-    log_info "主网络接口: $main_if"
-    log_info "本地接口: $bypass_interfaces"
 }
 
 # 软件下载
@@ -289,10 +237,6 @@ download_mihomo() {
 
 # 创建systemd服务文件
 create_systemd_service() {
-    # 在函数内部使用变量，这样在heredoc中会被正确展开
-    local fwmark=$PROXY_FWMARK
-    local route_table=$PROXY_ROUTE_TABLE
-    
     cat > /etc/systemd/system/mihomo.service << EOF
 [Unit]
 Description=mihomo transparent proxy service
@@ -310,32 +254,37 @@ StateDirectory=mihomo
 CacheDirectory=mihomo
 LogsDirectory=mihomo
 
-# 启动前准备
+
+# 启动前准备 - 不设置防火墙规则，避免死循环
 ExecStartPre=+/bin/bash -c 'echo "正在启动mihomo服务..."'
 ExecStartPre=+/bin/bash -c 'sysctl -w net.ipv4.ip_forward=1 > /dev/null'
 ExecStartPre=+/bin/bash -c 'sysctl -w net.core.default_qdisc=fq > /dev/null'
 ExecStartPre=+/bin/bash -c 'sysctl -w net.ipv4.tcp_congestion_control=bbr > /dev/null'
+ExecStartPre=+/bin/bash -c 'nft delete table inet mihomo 2>/dev/null || true'
 
-# 启动mihomo
+
+# 启动mihomo - 不设置防火墙规则
 ExecStart=/usr/local/bin/mihomo -d /etc/mihomo
 
 # 等待mihomo启动后再设置防火墙规则
 ExecStartPost=+/bin/bash -c 'echo "等待mihomo启动..."'
 ExecStartPost=+/bin/sleep 5
-ExecStartPost=+/bin/bash -c 'echo "正在设置网络规则..."'
+ExecStartPost=+/bin/bash -c 'echo "设置网络规则..."'
 # 启动后设置防火墙规则
-ExecStartPost=+/bin/bash -c 'ip -f inet rule add fwmark $fwmark lookup $route_table 2>/dev/null || true'
-ExecStartPost=+/bin/bash -c 'ip -f inet route add local default dev lo table $route_table 2>/dev/null || true'
+ExecStartPost=+/bin/bash -c 'echo "正在设置网络规则..."'
+ExecStartPost=+/bin/bash -c 'ip -f inet rule add fwmark $PROXY_FWMARK lookup $PROXY_ROUTE_TABLE 2>/dev/null || true'
+ExecStartPost=+/bin/bash -c 'ip -f inet route add local default dev lo table $PROXY_ROUTE_TABLE 2>/dev/null || true'
 ExecStartPost=+/bin/bash -c 'nft -f /etc/mihomo/nftables.conf 2>/dev/null || true'
 
-# 停止后清理防火墙规则（只清理mihomo表，不破坏其他规则）
+
+# 停止后清理防火墙规则
 ExecStop=+/bin/bash -c 'echo "正在清理网络规则..."'
 ExecStop=+/bin/bash -c 'pkill mihomo 2>/dev/null || true'
-ExecStop=+/bin/bash -c 'ip -f inet rule del fwmark $fwmark lookup $route_table 2>/dev/null || true'
-ExecStop=+/bin/bash -c 'ip -f inet route flush table $route_table 2>/dev/null || true'
+ExecStop=+/bin/bash -c 'ip -f inet rule del fwmark $PROXY_FWMARK lookup $PROXY_ROUTE_TABLE 2>/dev/null || true'
+ExecStop=+/bin/bash -c 'ip -f inet route flush table $PROXY_ROUTE_TABLE 2>/dev/null || true'
 ExecStop=+/bin/bash -c 'nft delete table inet mihomo 2>/dev/null || true'
 
-# 重新加载时只重新加载mihomo表
+# 重新加载时清理并重新设置规则
 ExecReload=+/bin/bash -c 'nft delete table inet mihomo 2>/dev/null || true'
 ExecReload=+/bin/bash -c 'nft -f /etc/mihomo/nftables.conf 2>/dev/null || true'
 
@@ -493,13 +442,11 @@ EOF
 
 # 网络规则管理（调试用）
 setup_rules() {
-    check_root
     log_info "设置网络规则（调试模式）..."
     if [ -f /etc/mihomo/nftables.conf ]; then
-        # 只加载mihomo表，不破坏其他规则
         nft -f /etc/mihomo/nftables.conf
-        ip -f inet rule add fwmark $PROXY_FWMARK lookup $PROXY_ROUTE_TABLE 2>/dev/null || true
-        ip -f inet route add local default dev lo table $PROXY_ROUTE_TABLE 2>/dev/null || true
+        ip -f inet rule add fwmark $PROXY_FWMARK lookup $PROXY_ROUTE_TABLE
+        ip -f inet route add local default dev lo table $PROXY_ROUTE_TABLE
         sysctl -w net.ipv4.ip_forward=1 > /dev/null
         sysctl -w net.core.default_qdisc=fq > /dev/null
         log_info "nftables 规则已应用（调试）"
@@ -510,17 +457,15 @@ setup_rules() {
 
 # 清理网络规则（调试用）
 clear_rules() {
-    check_root
     log_info "清理网络规则（调试模式）..."
-    # 只清理mihomo相关的规则，不破坏其他规则
-    IPRULE=$(ip rule show | grep "fwmark $PROXY_FWMARK lookup $PROXY_ROUTE_TABLE")
-    if [ -n "$IPRULE" ]; then
-        ip -f inet rule del fwmark $PROXY_FWMARK lookup $PROXY_ROUTE_TABLE 2>/dev/null || true
-        ip -f inet route flush table $PROXY_ROUTE_TABLE 2>/dev/null || true
+    IPRULE=$(ip rule show | grep $PROXY_ROUTE_TABLE)
+    if [ -n "$IPRULE" ]
+    then
+        ip -f inet rule del fwmark $PROXY_FWMARK lookup $PROXY_ROUTE_TABLE
+        ip -f inet route flush table $PROXY_ROUTE_TABLE
     fi
-    # 只删除mihomo表，不破坏其他表
-    nft delete table inet mihomo 2>/dev/null || true
-    log_info "mihomo 网络规则已清理（调试）"
+    nft flush ruleset
+    log_info "网络规则已清理（调试）"
 }
 
 # 安装mihomo
@@ -538,7 +483,7 @@ install_mihomo() {
     log_info "已将脚本安装为系统命令: mm"
     log_info "现在你可以直接使用 'mm <命令>' 来管理 mihomo 服务"
     log_info ""
-    log_info "请编辑 /etc/mihomo/config.yaml 配置你的代理服务器"
+    log_info "请编辑 /etc/mihomo/config.yaml 配置你的代理服务器，http://127.0.0.1:9090/UI 管理面板"
     log_info "然后使用以下命令启动服务:"
     log_info "  mm start"
     log_info "  mm enable"
@@ -687,13 +632,6 @@ EOF
 
 # 主函数
 main() {
-    # 如果是从curl下载的，尝试检测GitHub URL
-    # 通过检查是否通过管道传递来判断
-    if [ -t 0 ] && [ -z "${SCRIPT_GITHUB_URL:-}" ]; then
-        # 交互式终端，不是从管道读取
-        SCRIPT_GITHUB_URL=""
-    fi
-    
     if [ $# != 1 ]
     then
         show_usage
@@ -741,10 +679,6 @@ main() {
             ;;
     esac
 }
-
-# 如果脚本是通过 curl | bash 方式执行的，尝试从环境变量或参数中获取GitHub URL
-# 使用方法: SCRIPT_GITHUB_URL="https://raw.githubusercontent.com/user/repo/branch/mm.sh" bash <(curl -sSL ...)
-# 或者: curl -sSL ... | SCRIPT_GITHUB_URL="..." bash
 
 # 运行主函数
 main "$@"
